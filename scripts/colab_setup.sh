@@ -6,7 +6,8 @@ set -euo pipefail
 echo "== Installing Python dependencies (excluding torch) =="
 pip install -q \
   "numpy>=1.26" "scipy>=1.11" "pandas>=2.0" "pyyaml>=6.0" \
-  "zarr>=3.0" "h5py>=3.10" "safetensors>=0.4" "matplotlib>=3.8"
+  "pyarrow>=14.0" "zarr>=3.0" "h5py>=3.10" "safetensors>=0.4" \
+  "matplotlib>=3.8"
 
 echo "== Installing TAD (editable) =="
 pip install -q -e . --no-deps

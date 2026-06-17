@@ -143,9 +143,12 @@ def cmd_online(args):
     cfg = load_config(args.config)
     exp = _exp_dir(cfg)
     seed = int(cfg.experiment.get("seeds", [0])[0])
-    n_steps = int(cfg.get("online", {}).get("steps", 400)) if hasattr(cfg, "get") else 400
-    oracle = oracle_experiment(cfg, seed, n_steps=n_steps, device=args.device)
-    sub = subspace_optimizer_experiment(cfg, seed, n_steps=n_steps, device=args.device)
+    online_cfg = cfg.get("online", {}) if hasattr(cfg, "get") else {}
+    n_steps = int(online_cfg.get("steps", 400))
+    eval_every = int(online_cfg.get("eval_every", 5))
+    rank = int(online_cfg.get("subspace_rank", 8))
+    oracle = oracle_experiment(cfg, seed, n_steps=n_steps, eval_every=eval_every, device=args.device)
+    sub = subspace_optimizer_experiment(cfg, seed, n_steps=n_steps, rank=rank, device=args.device)
     # drop bulky per-record list before saving summary
     summary = {k: v for k, v in oracle.items() if k != "records"}
     (exp / "oracle_results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

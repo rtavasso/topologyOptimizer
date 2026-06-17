@@ -1,0 +1,17 @@
+# E8 candidate-update oracle ablation - local proposal family.
+includes:
+  - e1_colab.yaml
+
+experiment:
+  name: e8_oracle_local
+  seeds: [0, 1, 2]
+  split_seed: 0
+
+online:
+  steps: 800
+  eval_every: 5
+  ema_beta: 0.9
+  subspace_rank: 8
+  include_predicted_candidate: true
+  candidate_blends: [0.25, 0.5, 0.75]
+  candidate_scales: [0.5, 0.75, 1.25, 1.5]

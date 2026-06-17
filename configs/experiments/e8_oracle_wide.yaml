@@ -1,0 +1,17 @@
+# E8 candidate-update oracle ablation - wider scale proposal family.
+includes:
+  - e8_oracle_local.yaml
+
+experiment:
+  name: e8_oracle_wide
+  seeds: [0, 1, 2]
+  split_seed: 0
+
+online:
+  steps: 800
+  eval_every: 5
+  ema_beta: 0.9
+  subspace_rank: 8
+  include_predicted_candidate: true
+  candidate_blends: [0.5]
+  candidate_scales: [0.25, 0.5, 1.5, 2.0, 3.0]

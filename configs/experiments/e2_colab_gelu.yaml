@@ -1,0 +1,14 @@
+# E2 Colab - immediate nonlinear falsification with GELU.
+includes:
+  - e2_colab_relu.yaml
+
+experiment:
+  name: e2_colab_gelu
+  seeds: [0, 1, 2, 3, 4]
+  split_seed: 0
+
+model:
+  type: mlp
+  dimensions: [64, 128, 32]
+  bias: false
+  activation: gelu

@@ -1,0 +1,40 @@
+# E3 matched stochastic control for full-batch comparison.
+includes:
+  - ../data/gaussian_e1.yaml
+  - ../model/deep_linear_e1.yaml
+  - ../optimizer/adamw.yaml
+  - ../logging/phase1.yaml
+  - ../predictor/e1_predictors.yaml
+
+experiment:
+  name: e3_stochastic_matched
+  seeds: [0, 1, 2, 3, 4]
+  split_seed: 0
+
+data:
+  batch_size: 256
+  steps: 2000
+
+dynamics_dataset:
+  history_lengths: [16]
+  horizons: [1, 8, 32]
+  targets: [future_gradient, probe_action]
+  representations: [R1, R2, R3, R5]
+  node_feat_dim: 128
+  window_stride: 8
+
+eval:
+  history_length: 16
+  targets: [future_gradient, probe_action]
+  horizons: [1, 8, 32]
+
+predictor_config:
+  epochs: 60
+  hidden: 128
+  lr: 0.001
+  device: cuda
+
+online:
+  steps: 600
+  eval_every: 5
+  subspace_rank: 8

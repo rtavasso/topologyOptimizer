@@ -1,0 +1,45 @@
+# Next experiment batch after the E1 negative learned-predictor result.
+#
+# Run all entries:
+#   python scripts/run_experiment_batch.py --manifest configs/experiment_batches/next_after_e1.yaml --device cuda
+#
+# Preview commands only:
+#   python scripts/run_experiment_batch.py --manifest configs/experiment_batches/next_after_e1.yaml --device cuda --dry-run
+batch:
+  name: next_after_e1
+  rationale: >
+    E1 showed no learned model beating the strongest baseline, while the
+    candidate-update oracle remained positive. This batch checks nonlinear
+    survival, stochastic-vs-large-batch structure, and oracle proposal-family
+    robustness before scaling learned topology models.
+
+experiments:
+  - name: e2_colab_relu
+    config: configs/experiments/e2_colab_relu.yaml
+    stages: [run-e1]
+    question: Does residual predictability survive ReLU activation gating?
+
+  - name: e2_colab_gelu
+    config: configs/experiments/e2_colab_gelu.yaml
+    stages: [run-e1]
+    question: Does residual predictability survive smooth GELU gating?
+
+  - name: e3_stochastic_matched
+    config: configs/experiments/e3_stochastic_matched.yaml
+    stages: [run-e1]
+    question: What temporal structure appears under the stochastic baseline?
+
+  - name: e3_largebatch_matched
+    config: configs/experiments/e3_largebatch_matched.yaml
+    stages: [run-e1]
+    question: What temporal structure remains when batch innovation is reduced?
+
+  - name: e8_oracle_local
+    config: configs/experiments/e8_oracle_local.yaml
+    stages: [run-online-optimizer]
+    question: Is the candidate oracle robust to a local proposal family?
+
+  - name: e8_oracle_wide
+    config: configs/experiments/e8_oracle_wide.yaml
+    stages: [run-online-optimizer]
+    question: Is the candidate oracle robust to a wider scale proposal family?

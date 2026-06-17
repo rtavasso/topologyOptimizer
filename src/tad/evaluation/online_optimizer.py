@@ -59,7 +59,11 @@ def oracle_experiment(cfg: Config, seed: int, n_steps: int = 400, eval_every: in
     ledger = ComputeLedger()
 
     g_ema = {n: torch.zeros_like(p) for n, p in model.named_parameters()}
-    beta = 0.9
+    online_cfg = cfg.get("online", {}) if hasattr(cfg, "get") else {}
+    beta = float(online_cfg.get("ema_beta", 0.9))
+    candidate_scales = list(online_cfg.get("candidate_scales", [0.5, 2.0]))
+    candidate_blends = list(online_cfg.get("candidate_blends", [0.5]))
+    include_predicted = bool(online_cfg.get("include_predicted_candidate", True))
     records: List[dict] = []
     # held-out selection stream uses a disjoint key
     sel_stream = build_data_stream(cfg.data, seed + 777_777, total_steps, device=device)
@@ -78,13 +82,17 @@ def oracle_experiment(cfg: Config, seed: int, n_steps: int = 400, eval_every: in
                 d_pred = predictor_delta_fn(model, optimizer, g_ema, lr)
             else:
                 d_pred = {n: -lr * g_ema[n] for n, p in model.named_parameters()}  # proxy Delta_2
-            candidates = [
-                d_base,
-                d_pred,
-                _blend(d_base, d_pred, 0.5),                          # Delta_3
-                _scale(d_base, 0.5),
-                _scale(d_base, 2.0),
-            ]
+            candidates = [d_base]
+            labels = ["baseline"]
+            if include_predicted:
+                candidates.append(d_pred)
+                labels.append("predicted")
+            for alpha in candidate_blends:
+                candidates.append(_blend(d_base, d_pred, float(alpha)))
+                labels.append(f"blend_{float(alpha):g}")
+            for alpha in candidate_scales:
+                candidates.append(_scale(d_base, float(alpha)))
+                labels.append(f"scale_{float(alpha):g}")
             sel = sel_stream.batch(step)
             def sel_loss():
                 with torch.no_grad():
@@ -96,9 +104,12 @@ def oracle_experiment(cfg: Config, seed: int, n_steps: int = 400, eval_every: in
                     return float(mse_loss(model(batch.x), batch.y).item())
             res_same = evaluate_candidates(model, optimizer, candidates, train_loss)
             res["winner_same_batch"] = res_same["winner"]
+            res["winner_label"] = labels[res["winner"]]
+            res["winner_same_batch_label"] = labels[res_same["winner"]]
             res["same_vs_heldout_gap"] = res_same["improvement_over_baseline"] - res["improvement_over_baseline"]
             res["step"] = step
             res["n_candidates"] = len(candidates)
+            res["candidate_labels"] = labels
             ledger.add_flops("candidate_eval", len(candidates) * matmul_flops(
                 sel.x.shape[0], stream.input_dim, stream.output_dim))
             records.append(res)
@@ -106,14 +117,17 @@ def oracle_experiment(cfg: Config, seed: int, n_steps: int = 400, eval_every: in
         optimizer.step()  # real step continues training (Delta_1)
 
     winners = np.array([r["winner"] for r in records])
+    winner_labels = [r["winner_label"] for r in records]
     improvements = np.array([r["improvement_over_baseline"] for r in records])
     return {
         "n_evals": len(records),
         "baseline_win_rate": float(np.mean(winners == 0)),
-        "predicted_win_rate": float(np.mean(winners == 1)),
+        "predicted_win_rate": float(np.mean(np.array(winner_labels) == "predicted")),
         "mean_improvement_over_baseline": float(np.mean(improvements)),
         "frac_positive_improvement": float(np.mean(improvements > 1e-9)),
         "winner_histogram": {int(k): int(v) for k, v in zip(*np.unique(winners, return_counts=True))},
+        "winner_label_histogram": {str(k): int(v) for k, v in zip(*np.unique(winner_labels, return_counts=True))},
+        "candidate_labels": records[0]["candidate_labels"] if records else [],
         "mean_same_vs_heldout_gap": float(np.mean([r["same_vs_heldout_gap"] for r in records])),
         "compute": ledger.to_dict(),
         "records": records,

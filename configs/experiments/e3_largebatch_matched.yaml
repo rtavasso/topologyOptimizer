@@ -1,0 +1,17 @@
+# E3 matched large-batch control for deterministic state evolution.
+includes:
+  - e3_stochastic_matched.yaml
+
+experiment:
+  name: e3_largebatch_matched
+  seeds: [0, 1, 2]
+  split_seed: 0
+
+data:
+  batch_size: 8192
+  steps: 2000
+
+online:
+  steps: 400
+  eval_every: 5
+  subspace_rank: 8

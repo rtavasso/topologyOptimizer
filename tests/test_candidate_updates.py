@@ -64,3 +64,23 @@ def test_evaluate_candidates_picks_min():
     assert res["winner"] == 0
     # state restored after evaluation
     assert all(p.grad is not None for p in model.parameters())
+
+
+def test_oracle_records_configured_candidate_labels():
+    from tad.config import Config
+    from tad.evaluation.online_optimizer import oracle_experiment
+
+    cfg = tiny_config("oracle_labels", steps=4)
+    raw = cfg.to_dict()
+    raw["online"] = {
+        "ema_beta": 0.8,
+        "include_predicted_candidate": True,
+        "candidate_blends": [0.25, 0.75],
+        "candidate_scales": [0.5, 1.5],
+    }
+    res = oracle_experiment(Config(raw), seed=0, n_steps=2, eval_every=1)
+
+    assert res["candidate_labels"] == [
+        "baseline", "predicted", "blend_0.25", "blend_0.75", "scale_0.5", "scale_1.5"
+    ]
+    assert sum(res["winner_label_histogram"].values()) == res["n_evals"]
