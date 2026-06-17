@@ -1,0 +1,78 @@
+# E1 — Minimal linear crux (spec Section 21 default experiment).
+experiment:
+  name: e1_two_layer_stationary
+  seeds: [0, 1, 2, 3, 4]
+  split_seed: 0
+
+data:
+  type: gaussian_matrix_regression
+  input_dim: 64
+  output_dim: 32
+  batch_size: 256
+  steps: 5000
+  train_size: 1000000
+  input_covariance:
+    type: power_law
+    alpha: 1.0
+  teacher:
+    type: prescribed_spectrum
+    rank: 16
+    spectrum: geometric
+    condition_number: 50
+  noise_std: 0.01
+  validation_size: 4096
+
+model:
+  type: deep_linear
+  dimensions: [64, 128, 32]
+  bias: false
+  initialization: xavier
+
+optimizer:
+  type: adamw
+  learning_rate: 0.001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+logging:
+  full_tensor_every: 1
+  svd_every: 5
+  validation_every: 25
+  checkpoint_every: 100
+  svd_rank: 16
+  random_probe_count: 16
+  activation_probe_count: 16
+  probe_kind: gaussian
+
+dynamics_dataset:
+  history_lengths: [1, 4, 16, 32]
+  horizons: [1, 2, 4, 8, 16, 32, 64, 100]
+  targets: [future_gradient, weight_delta, probe_action, gradient_subspace]
+  representations: [R1, R2, R3, R5]
+  node_feat_dim: 128
+
+eval:
+  history_length: 16
+  targets: [future_gradient, probe_action]
+  horizons: [1, 8, 32]
+
+predictor_config:
+  epochs: 60
+  hidden: 128
+  lr: 0.001
+
+online:
+  steps: 600
+
+predictors:
+  - persistence
+  - constant_velocity
+  - ridge
+  - tuned_ema
+  - vector_autoregression
+  - online_subspace_tracker
+  - periodic_svd
+  - layer_gru
+  - topology_graph_gru
+  - residualized_topology_graph_gru
+  - slow_subspace_fast_coordinate

@@ -1,0 +1,33 @@
+# E3 — Full-batch vs stochastic dynamics (spec Section 16 E3).
+# Demonstrates the `includes:` mechanism: shared blocks are merged, then the
+# experiment overrides batch size to approximate full-batch and marks the run.
+includes:
+  - ../data/gaussian_e1.yaml
+  - ../model/deep_linear_e1.yaml
+  - ../optimizer/adamw.yaml
+  - ../logging/phase1.yaml
+  - ../predictor/e1_predictors.yaml
+
+experiment:
+  name: e3_fullbatch
+  seeds: [0, 1, 2]
+  split_seed: 0
+
+data:
+  batch_size: 8192      # very-large-batch control toward deterministic dynamics
+  steps: 2000
+
+dynamics_dataset:
+  history_lengths: [16]
+  horizons: [1, 8, 32]
+  targets: [future_gradient, probe_action]
+  representations: [R1, R2, R3, R5]
+  node_feat_dim: 128
+
+eval:
+  history_length: 16
+  targets: [future_gradient, probe_action]
+  horizons: [1, 8, 32]
+
+online:
+  steps: 400

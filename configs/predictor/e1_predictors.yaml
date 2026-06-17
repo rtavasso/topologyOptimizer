@@ -1,0 +1,16 @@
+predictor_config:
+  epochs: 60
+  hidden: 128
+  lr: 0.001
+predictors:
+  - persistence
+  - constant_velocity
+  - ridge
+  - tuned_ema
+  - vector_autoregression
+  - online_subspace_tracker
+  - periodic_svd
+  - layer_gru
+  - topology_graph_gru
+  - residualized_topology_graph_gru
+  - slow_subspace_fast_coordinate

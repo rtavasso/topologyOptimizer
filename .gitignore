@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.uv/
+artifacts/experiments/
+artifacts/trajectories/*
+artifacts/processed/*
+artifacts/checkpoints/*
+artifacts/reports/*
+!artifacts/**/.gitkeep
+.pytest_cache/
+*.egg-info/
+build/
+dist/

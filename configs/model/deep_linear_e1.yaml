@@ -1,0 +1,5 @@
+model:
+  type: deep_linear
+  dimensions: [64, 128, 32]
+  bias: false
+  initialization: xavier

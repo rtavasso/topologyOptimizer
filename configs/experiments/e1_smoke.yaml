@@ -1,0 +1,75 @@
+# E1 smoke — tiny, fast end-to-end run of the full pipeline (CI / sanity).
+experiment:
+  name: e1_smoke
+  seeds: [0, 1, 2, 3]
+  split_seed: 0
+
+data:
+  type: gaussian_matrix_regression
+  input_dim: 16
+  output_dim: 8
+  batch_size: 64
+  steps: 200
+  input_covariance:
+    type: power_law
+    alpha: 1.0
+  teacher:
+    type: prescribed_spectrum
+    rank: 6
+    spectrum: geometric
+    condition_number: 20
+  noise_std: 0.01
+  validation_size: 512
+
+model:
+  type: deep_linear
+  dimensions: [16, 24, 8]
+  bias: false
+  initialization: xavier
+
+optimizer:
+  type: adamw
+  learning_rate: 0.005
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+logging:
+  full_tensor_every: 1
+  svd_every: 5
+  validation_every: 25
+  checkpoint_every: 50
+  svd_rank: 6
+  random_probe_count: 6
+  activation_probe_count: 6
+  probe_kind: gaussian
+
+dynamics_dataset:
+  history_lengths: [8]
+  horizons: [1, 8]
+  targets: [future_gradient, probe_action]
+  representations: [R1, R2, R3, R5]
+  node_feat_dim: 64
+
+eval:
+  history_length: 8
+  targets: [future_gradient, probe_action]
+  horizons: [1, 8]
+
+predictor_config:
+  epochs: 8
+  hidden: 32
+  lr: 0.003
+
+online:
+  steps: 120
+
+predictors:
+  - persistence
+  - constant_velocity
+  - ridge
+  - tuned_ema
+  - vector_autoregression
+  - slow_subspace_fast_coordinate
+  - layer_gru
+  - topology_graph_gru
+  - residualized_topology_graph_gru

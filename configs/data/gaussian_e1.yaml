@@ -1,0 +1,17 @@
+# Shared data block (spec Section 5.1 / 21). Pull in via `includes:`.
+data:
+  type: gaussian_matrix_regression
+  input_dim: 64
+  output_dim: 32
+  batch_size: 256
+  steps: 5000
+  input_covariance:
+    type: power_law
+    alpha: 1.0
+  teacher:
+    type: prescribed_spectrum
+    rank: 16
+    spectrum: geometric
+    condition_number: 50
+  noise_std: 0.01
+  validation_size: 4096

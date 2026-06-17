@@ -1,0 +1,9 @@
+logging:
+  full_tensor_every: 1
+  svd_every: 5
+  validation_every: 25
+  checkpoint_every: 100
+  svd_rank: 16
+  random_probe_count: 16
+  activation_probe_count: 16
+  probe_kind: gaussian
