@@ -63,6 +63,32 @@ def _subspace_reconstruct(tgt_hist, shapes, rank, mode, beta=0.9, period=5) -> n
     return out
 
 
+def _ridge_fit(X: np.ndarray, Y: np.ndarray, alpha: float):
+    """Ridge that picks the primal or dual (kernel) normal equations by size.
+
+    Primal Gram is (D x D); dual is (N x N). For high-dim targets (e.g. a
+    flattened 8192-dim gradient history) D >> N, so the dual form is what keeps
+    this from allocating a quarter-terabyte matrix.
+    """
+    n, d = X.shape
+    if d <= n:
+        A = X.T @ X + alpha * np.eye(d, dtype=X.dtype)
+        return ("primal", np.linalg.solve(A, X.T @ Y))
+    G = X @ X.T + alpha * np.eye(n, dtype=X.dtype)
+    return ("dual", X, np.linalg.solve(G, Y))  # store Xtrain + dual coeffs
+
+
+def _ridge_predict(model, Xte: np.ndarray) -> np.ndarray:
+    if model[0] == "primal":
+        return Xte @ model[1]
+    _, Xtr, D = model
+    return (Xte @ Xtr.T) @ D
+
+
+def _with_bias(X: np.ndarray) -> np.ndarray:
+    return np.concatenate([X, np.ones((X.shape[0], 1), dtype=X.dtype)], axis=1)
+
+
 class Persistence(Predictor):
     name = "persistence"
 
@@ -129,22 +155,23 @@ class Ridge(Predictor):
 
     def fit(self, bundle):
         feat, _, Y = split_arrays(bundle, "train")
-        X = feat.reshape(feat.shape[0], -1)
-        X = np.concatenate([X, np.ones((X.shape[0], 1), dtype=X.dtype)], axis=1)
-        Yf = Y.reshape(Y.shape[0], -1)
-        A = X.T @ X + self.alpha * np.eye(X.shape[1], dtype=X.dtype)
-        self.W = np.linalg.solve(A, X.T @ Yf)
+        X = _with_bias(feat.reshape(feat.shape[0], -1))
+        self._model = _ridge_fit(X, Y.reshape(Y.shape[0], -1), self.alpha)
         self._yshape = Y.shape[1:]
 
     def predict(self, bundle, split):
         feat, _, _ = split_arrays(bundle, split)
-        X = feat.reshape(feat.shape[0], -1)
-        X = np.concatenate([X, np.ones((X.shape[0], 1), dtype=X.dtype)], axis=1)
-        return (X @ self.W).reshape(X.shape[0], *self._yshape)
+        X = _with_bias(feat.reshape(feat.shape[0], -1))
+        return _ridge_predict(self._model, X).reshape(X.shape[0], *self._yshape)
 
 
 class VectorAutoregression(Predictor):
-    """Linear AR map from the flattened target-space history to the target."""
+    """Linear AR map from the flattened target-space history to the target.
+
+    Uses the dual (kernel) ridge solution when the flattened history dimension
+    exceeds the number of windows, so it scales to high-dim targets instead of
+    forming a (H*nodes*Tdim)^2 Gram matrix.
+    """
 
     name = "vector_autoregression"
     needs_training = True
@@ -155,18 +182,14 @@ class VectorAutoregression(Predictor):
 
     def fit(self, bundle):
         _, tgt_hist, Y = split_arrays(bundle, "train")
-        X = tgt_hist.reshape(tgt_hist.shape[0], -1)
-        X = np.concatenate([X, np.ones((X.shape[0], 1), dtype=X.dtype)], axis=1)
-        Yf = Y.reshape(Y.shape[0], -1)
-        A = X.T @ X + self.alpha * np.eye(X.shape[1], dtype=X.dtype)
-        self.W = np.linalg.solve(A, X.T @ Yf)
+        X = _with_bias(tgt_hist.reshape(tgt_hist.shape[0], -1))
+        self._model = _ridge_fit(X, Y.reshape(Y.shape[0], -1), self.alpha)
         self._yshape = Y.shape[1:]
 
     def predict(self, bundle, split):
         _, tgt_hist, _ = split_arrays(bundle, split)
-        X = tgt_hist.reshape(tgt_hist.shape[0], -1)
-        X = np.concatenate([X, np.ones((X.shape[0], 1), dtype=X.dtype)], axis=1)
-        return (X @ self.W).reshape(X.shape[0], *self._yshape)
+        X = _with_bias(tgt_hist.reshape(tgt_hist.shape[0], -1))
+        return _ridge_predict(self._model, X).reshape(X.shape[0], *self._yshape)
 
 
 class DMDKoopman(Predictor):
@@ -182,12 +205,21 @@ class DMDKoopman(Predictor):
     def __init__(self, cfg=None):
         super().__init__(cfg)
         self.alpha = float((cfg or {}).get("alpha", 1.0))
+        # a full DMD transition is (nodes*Td)^2; skip above this to avoid OOM
+        self.max_state_dim = int((cfg or {}).get("max_state_dim", 4096))
         self.A: Optional[np.ndarray] = None
 
     def fit(self, bundle):
         _, tgt_hist, _ = split_arrays(bundle, "train")
         N, H, nodes, Td = tgt_hist.shape
         if H < 2:
+            self.A = None
+            return
+        if nodes * Td > self.max_state_dim:
+            # too high-dimensional for a dense transition; fall back to
+            # persistence (logged, not silent — interpretation rule "no silent caps")
+            print(f"[baseline] dmd_koopman skipped: state dim {nodes * Td} > "
+                  f"max_state_dim {self.max_state_dim}; using persistence", flush=True)
             self.A = None
             return
         X = tgt_hist[:, :-1].reshape(-1, nodes * Td)

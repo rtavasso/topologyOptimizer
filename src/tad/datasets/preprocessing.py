@@ -17,19 +17,28 @@ from .trajectory_windows import build_run_windows, WindowTensors
 
 
 def split_runs(run_dirs: List[Path], fractions=(0.7, 0.15, 0.15), seed: int = 0) -> Dict[str, List[Path]]:
-    """Deterministic split by whole run. Returns train/val/test path lists."""
+    """Deterministic split by whole run into DISJOINT train/val/test lists.
+
+    For n >= 3 each split is non-empty and disjoint (the leakage guard requires
+    it). For n < 3 a true 3-way split is impossible; we degrade gracefully and
+    let the caller's leakage check surface it.
+    """
     run_dirs = sorted(run_dirs, key=lambda p: str(p))
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(run_dirs))
     n = len(run_dirs)
-    n_tr = max(1, int(round(fractions[0] * n)))
-    n_va = max(0, int(round(fractions[1] * n)))
-    if n_tr + n_va >= n and n >= 3:
-        n_tr, n_va = n - 2, 1
+    order = rng.permutation(n)
+    if n < 3:
+        tr = [run_dirs[i] for i in order[:max(1, n - 1)]]
+        rest = [run_dirs[i] for i in order[max(1, n - 1):]] or tr[-1:]
+        return {"train": tr, "val": rest, "test": rest}
+    n_tr = int(round(fractions[0] * n))
+    n_va = int(round(fractions[1] * n))
+    n_tr = min(max(1, n_tr), n - 2)          # leave >= 2 runs for val+test
+    n_va = min(max(1, n_va), n - 1 - n_tr)   # leave >= 1 run for test
     tr = [run_dirs[i] for i in order[:n_tr]]
     va = [run_dirs[i] for i in order[n_tr:n_tr + n_va]]
     te = [run_dirs[i] for i in order[n_tr + n_va:]]
-    return {"train": tr, "val": va or te[:1], "test": te or va[:1]}
+    return {"train": tr, "val": va, "test": te}
 
 
 def _gather(run_dirs, hl, h, target, reps, node_feat_dim, run_offset, stride=1) -> Optional[WindowTensors]:
