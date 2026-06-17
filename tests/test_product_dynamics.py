@@ -26,3 +26,14 @@ def test_product_update_decomposition():
 
     t1, t2, t3 = product_update_decomposition(W2, W1, dW2, dW1)
     assert torch.allclose(M_after - M_before, t1 + t2 + t3, atol=1e-6)
+
+
+def test_rectangular_factorized_init_uses_all_input_directions():
+    cfg = Config({"type": "deep_linear", "dimensions": [6, 5, 4], "bias": False,
+                  "initialization": "balanced_svd"})
+    model = build_model(cfg, seed=0)
+    M = model.end_to_end_map().detach()
+
+    assert M.shape == (4, 6)
+    assert torch.linalg.matrix_rank(M) == 4
+    assert torch.linalg.norm(M[:, 4:]).item() > 1e-6

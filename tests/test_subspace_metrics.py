@@ -1,6 +1,7 @@
 """SVD sign/subspace invariance (spec Section 20.5)."""
 import torch
 
+from conftest import tiny_config
 from tad.utils import linalg
 
 
@@ -36,3 +37,28 @@ def test_sign_alignment_deterministic():
     U2, _, V2 = linalg.top_singular(A, 3)
     assert torch.allclose(U1, U2)
     assert torch.allclose(V1, V2)
+
+
+def test_gradient_subspace_target_uses_exact_horizon_with_sparse_svd():
+    import tempfile
+
+    from tad.datasets.trajectory_windows import build_run_windows
+    from tad.logging.reader import TrajectoryReader
+    from tad.training.trainer import train_run
+
+    cfg = tiny_config("subspace_horizon", steps=8)
+    raw = cfg.to_dict()
+    raw["logging"]["svd_every"] = 5
+    cfg = type(cfg)(raw)
+    rd = train_run(cfg, 0, tempfile.mkdtemp())
+    reader = TrajectoryReader(rd)
+
+    windows = build_run_windows(
+        reader, history_length=1, horizon=1, target="gradient_subspace",
+        reps=["R1"], node_feat_dim=16,
+    )
+    G1 = torch.from_numpy(reader.layer_field("W1", "G", step=1))
+    U1, _, _ = linalg.top_singular(G1, 4)
+    got = torch.from_numpy(windows.Y[0, 0, : U1.numel()].reshape(U1.shape))
+
+    assert torch.allclose(got, U1, atol=1e-6)

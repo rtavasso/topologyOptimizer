@@ -12,3 +12,6 @@ artifacts/reports/*
 *.egg-info/
 build/
 dist/
+artifacts/*.log
+*.zip
+.ipynb_checkpoints/

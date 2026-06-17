@@ -90,6 +90,8 @@ class LoggingHook:
                     self.writer.log_layer_full(step, name, "activation_covariance", _cov(cap.pre_input))
                 if cap is not None and cap.pre_output is not None:
                     self.writer.log_layer_full(step, name, "output_covariance", _cov(cap.pre_output))
+                if cap is not None and cap.act_mask is not None:
+                    self.writer.log_layer_full(step, name, "activation_mask", cap.act_mask)
                 if cap is not None and cap.out_grad is not None:
                     self.writer.log_layer_full(step, name, "backprop_error_mean", cap.out_grad.mean(0))
                     self.writer.log_layer_full(step, name, "backprop_error_covariance", _cov(cap.out_grad))
@@ -105,11 +107,28 @@ class LoggingHook:
         if do_full:
             M = prefix[-1]
             self.writer.log_network_full(step, "end_to_end_map", M)
+            suffix = products.suffix_products(weights)
+            for name, P in zip(names, prefix):
+                self.writer.log_network_full(step, f"prefix_product__{name}", P)
+            for name, S in zip(names, suffix):
+                self.writer.log_network_full(step, f"suffix_product__{name}", S)
             if self.is_linear:
                 Gm = self._end_to_end_gradient()
                 if Gm is not None:
                     self.writer.log_network_full(step, "end_to_end_gradient", Gm)
+            J = self._effective_local_map(weights)
+            if J is not None:
+                self.writer.log_network_full(step, "effective_local_map", J)
+                if self.P0 is not None:
+                    self.writer.log_network_full(step, "probe_effective_local_map", J @ self.P0)
             balance = invariants.all_balance_errors(weights)
+            conds = [linalg.condition_number(W) for W in weights]
+            stable = [linalg.stable_rank(W) for W in weights]
+            effective = [linalg.effective_rank(W) for W in weights]
+            self.writer.log_network_full(step, "balance_errors", torch.tensor(balance, dtype=M.dtype, device=M.device))
+            self.writer.log_network_full(step, "condition_numbers", torch.tensor(conds, dtype=M.dtype, device=M.device))
+            self.writer.log_network_full(step, "stable_ranks", torch.tensor(stable, dtype=M.dtype, device=M.device))
+            self.writer.log_network_full(step, "effective_ranks", torch.tensor(effective, dtype=M.dtype, device=M.device))
             self.writer.log_scalars(step, {
                 "balance_error_mean": float(sum([b for b in balance if b == b]) / max(1, len(balance))) if balance else None,
                 "end_to_end_effective_rank": linalg.effective_rank(M),
@@ -134,3 +153,16 @@ class LoggingHook:
         if first.pre_input is None or last.out_grad is None:
             return None
         return last.out_grad.transpose(0, 1) @ first.pre_input
+
+    def _effective_local_map(self, weights: List[torch.Tensor]) -> Optional[torch.Tensor]:
+        """Probe-averaged nonlinear local Jacobian from captured activation masks."""
+        if not any(getattr(self.model.captures.get(n), "act_mask", None) is not None for n in self.model.layer_names):
+            return None
+        J = None
+        for i, (name, W) in enumerate(zip(self.model.layer_names, weights)):
+            J = W if J is None else W @ J
+            cap = self.model.captures.get(name)
+            mask = getattr(cap, "act_mask", None) if cap is not None else None
+            if mask is not None and i < len(weights) - 1:
+                J = mask.to(device=J.device, dtype=J.dtype).unsqueeze(1) * J
+        return J

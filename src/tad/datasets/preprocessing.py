@@ -55,8 +55,16 @@ def _gather(run_dirs, hl, h, target, reps, node_feat_dim, run_offset) -> Optiona
         return None
     cat = lambda attr: np.concatenate([getattr(p, attr) for p in parts], axis=0)
     meta = {k: np.concatenate([p.meta[k] for p in parts]) for k in parts[0].meta}
+    aux = None
+    if parts[0].aux is not None:
+        aux = {
+            "aux_W": np.concatenate([p.aux["aux_W"] for p in parts], axis=0),
+            "aux_GM_hist": np.concatenate([p.aux["aux_GM_hist"] for p in parts], axis=0),
+            "aux_W_shapes": parts[0].aux["aux_W_shapes"],
+            "aux_GM_shape": parts[0].aux["aux_GM_shape"],
+        }
     return WindowTensors(cat("feat_hist"), cat("tgt_hist"), cat("Y"),
-                         mask, shapes, meta), names
+                         mask, shapes, meta, aux=aux), names
 
 
 def build_dynamics_dataset(cfg, trajectory_dir, out_dir) -> dict:
@@ -101,6 +109,12 @@ def build_dynamics_dataset(cfg, trajectory_dir, out_dir) -> dict:
                         bundle[f"{sp}_meta_{mk}"] = mv
                     bundle["mask"] = w.mask
                     bundle["node_shapes"] = np.array(w.node_shapes)
+                    bundle["cadence"] = int(w.meta["cadence"][0])
+                    bundle["h_idx"] = int(w.meta["h_idx"][0])
+                    bundle["target"] = target
+                    if w.aux is not None:
+                        for ak, av in w.aux.items():
+                            bundle[f"{sp}_{ak}"] = av
                 if not bundle:
                     continue
                 bundle["layer_names"] = np.array(names if names else [])
@@ -116,10 +130,41 @@ def load_dynamics_dataset(path) -> dict:
     return dict(np.load(path, allow_pickle=True))
 
 
+def _run_identity(run_dir: Path) -> dict:
+    """Extract (seed, teacher fingerprint) for leakage checks (spec 20.8)."""
+    ident = {"seed": None, "teacher": None}
+    meta_path = run_dir / "run_metadata.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            ident["seed"] = meta.get("seed")
+            ident["teacher"] = meta.get("teacher_fingerprint")
+        except Exception:
+            pass
+    if ident["seed"] is None and "seed" in run_dir.name:
+        try:
+            ident["seed"] = int(run_dir.name.split("seed")[-1])
+        except ValueError:
+            pass
+    return ident
+
+
 def _assert_no_leakage(split: Dict[str, List[Path]]) -> None:
-    seen = {}
+    """No run_id, seed, or teacher may appear in more than one split (spec 20.8)."""
+    seen_run: Dict[str, str] = {}
+    seen_seed: Dict[object, str] = {}
+    seen_teacher: Dict[object, str] = {}
     for sp, dirs in split.items():
         for d in dirs:
-            if d.name in seen and seen[d.name] != sp:
-                raise AssertionError(f"run {d.name} appears in both {seen[d.name]} and {sp}")
-            seen[d.name] = sp
+            if d.name in seen_run and seen_run[d.name] != sp:
+                raise AssertionError(f"run {d.name} appears in both {seen_run[d.name]} and {sp}")
+            seen_run[d.name] = sp
+            ident = _run_identity(d)
+            for key, store, label in ((ident["seed"], seen_seed, "seed"),
+                                      (ident["teacher"], seen_teacher, "teacher")):
+                if key is None:
+                    continue
+                if key in store and store[key] != sp:
+                    raise AssertionError(
+                        f"{label} {key!r} appears in both {store[key]} and {sp} (train/test leakage)")
+                store[key] = sp

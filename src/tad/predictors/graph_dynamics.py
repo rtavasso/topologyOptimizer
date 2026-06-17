@@ -37,22 +37,13 @@ class _MessagePassing(nn.Module):
 
 
 class _GraphGRUModule(nn.Module):
-    def __init__(self, feat_dim, tgt_dim, n_nodes, adjacency, hidden=128, kg=2,
-                 residual=False, ema_beta=0.9):
+    def __init__(self, feat_dim, tgt_dim, n_nodes, adjacency, hidden=128, kg=2):
         super().__init__()
         self.register_buffer("A", torch.from_numpy(adjacency))
         self.enc = nn.Sequential(nn.Linear(feat_dim, hidden), nn.GELU())
         self.mp = nn.ModuleList([_MessagePassing(hidden) for _ in range(kg)])
         self.gru = nn.GRU(hidden, hidden, batch_first=True)
         self.dec = nn.Sequential(nn.Linear(hidden, hidden), nn.GELU(), nn.Linear(hidden, tgt_dim))
-        self.residual = residual
-        self.ema_beta = ema_beta
-
-    def _ema(self, tgt_hist):
-        out = tgt_hist[:, 0]
-        for t in range(1, tgt_hist.shape[1]):
-            out = self.ema_beta * out + (1 - self.ema_beta) * tgt_hist[:, t]
-        return out
 
     def forward(self, feat, tgt_hist):
         B, H, nodes, F = feat.shape
@@ -62,10 +53,7 @@ class _GraphGRUModule(nn.Module):
             z = z + mp(z, self.A)
         z = z.reshape(B, H, nodes, -1).permute(0, 2, 1, 3).reshape(B * nodes, H, -1)
         out, _ = self.gru(z)
-        pred = self.dec(out[:, -1]).reshape(B, nodes, -1)
-        if self.residual:
-            pred = pred + self._ema(tgt_hist)
-        return pred
+        return self.dec(out[:, -1]).reshape(B, nodes, -1)
 
 
 class TopologyGraphGRU(Predictor):
@@ -94,9 +82,29 @@ class TopologyGraphGRU(Predictor):
             perm = rng.permutation(n_nodes)
             A = A[perm][:, perm]
         self.module = _GraphGRUModule(feat.shape[-1], tgt_dim, n_nodes, A,
-                                      hidden=self.hidden, kg=self.kg, residual=self.residual)
+                                      hidden=self.hidden, kg=self.kg)
         self.fwd = lambda m, f, t: m(f, t)
-        train_module(self.module, bundle, self.fwd, epochs=self.epochs, lr=self.lr, device=self.device)
+
+        if self.residual:
+            # Predict the residual beyond the *tuned* strongest baseline
+            # (Section 12.10), not a fixed-beta EMA: fit tuned EMA, train the net
+            # on (Y - baseline), and add the baseline back at prediction time.
+            from .baselines import TunedEMA
+            self.baseline = TunedEMA(self.cfg)
+            self.baseline.fit(bundle)
+            res_bundle = dict(bundle)
+            for sp in ("train", "val"):
+                if f"{sp}_Y" in bundle and bundle.get(f"{sp}_Y") is not None:
+                    res_bundle[f"{sp}_Y"] = bundle[f"{sp}_Y"] - self.baseline.predict(bundle, sp)
+            train_module(self.module, res_bundle, self.fwd, epochs=self.epochs,
+                         lr=self.lr, device=self.device)
+        else:
+            self.baseline = None
+            train_module(self.module, bundle, self.fwd, epochs=self.epochs,
+                         lr=self.lr, device=self.device)
 
     def predict(self, bundle, split):
-        return predict_module(self.module, bundle, split, self.fwd, self.device)
+        pred = predict_module(self.module, bundle, split, self.fwd, self.device)
+        if self.baseline is not None:
+            pred = pred + self.baseline.predict(bundle, split)
+        return pred

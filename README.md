@@ -50,6 +50,16 @@ tad make-report --experiment-dir artifacts/experiments/e1_two_layer_stationary
 `tad run-e1 --config <cfg>` runs the whole chain. A fast end-to-end sanity
 configuration is `configs/experiments/e1_smoke.yaml`.
 
+### Run on a Colab GPU
+
+Open `notebooks/colab_run_e1.ipynb` in Colab (`Runtime → Change runtime type →
+GPU`), set `REPO_URL`, and run all cells. It installs deps without disturbing
+Colab's CUDA PyTorch (`scripts/colab_setup.sh`), runs
+`tad --device cuda run-e1 --config configs/experiments/e1_colab.yaml` (a
+session-sized E1; use `e1.yaml` for the full 5000-step run), and renders the
+report inline. Model forward/backward and learned predictors use the GPU; dense
+per-step logging is CPU/IO-bound by design.
+
 ## What each stage produces
 
 | Stage | Artifact |

@@ -77,6 +77,29 @@ def subspace_metrics(Yhat, Y, mask, node_shapes, rank=8) -> Dict[str, float]:
     }
 
 
+def basis_subspace_metrics(Yhat, Y, mask, node_shapes) -> Dict[str, float]:
+    """For the ``gradient_subspace`` target the per-node values ARE orthonormal
+    bases U (m x r); compare predicted vs true column spaces with the rotation/
+    sign-invariant overlap and projector distance (Section 20.5)."""
+    N, nodes, Td = Y.shape
+    overlaps, dists = [], []
+    for ni in range(nodes):
+        shape = tuple(int(s) for s in node_shapes[ni])
+        flat = int(np.prod(shape))
+        for b in range(min(N, 64)):
+            Ut = torch.from_numpy(Y[b, ni, :flat].reshape(shape))
+            Up = torch.from_numpy(Yhat[b, ni, :flat].reshape(shape))
+            if Ut.norm() < EPS or Up.norm() < EPS:
+                continue
+            Up = torch.linalg.qr(Up)[0]  # re-orthonormalize the prediction
+            overlaps.append(linalg.subspace_overlap(Ut, Up))
+            dists.append(linalg.projection_distance(Ut, Up))
+    return {
+        "subspace_overlap": float(np.mean(overlaps)) if overlaps else float("nan"),
+        "projection_distance": float(np.mean(dists)) if dists else float("nan"),
+    }
+
+
 def evaluate_prediction(Yhat, Y, mask, node_shapes, target: str, baselines: Dict[str, np.ndarray] = None) -> dict:
     out = {
         "nmse": normalized_mse(Yhat, Y, mask),
@@ -88,6 +111,8 @@ def evaluate_prediction(Yhat, Y, mask, node_shapes, target: str, baselines: Dict
                            "future_weight", "next_weight", "weight_delta", "future_weight_delta")
     if is_matrix:
         out.update(subspace_metrics(Yhat, Y, mask, node_shapes))
+    elif target == "gradient_subspace":
+        out.update(basis_subspace_metrics(Yhat, Y, mask, node_shapes))
     if baselines:
         for bname, bpred in baselines.items():
             out[f"skill_vs_{bname}"] = skill_vs(Yhat, bpred, Y, mask)

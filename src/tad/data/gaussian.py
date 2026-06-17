@@ -83,13 +83,34 @@ class GaussianMatrixRegression:
             step=step,
         )
 
+    def _is_nonstationary(self) -> bool:
+        return (self._cov_factor_fn is not None
+                or self.teacher.drift_std > 0
+                or self.teacher.deltas is not None
+                or dict(self.cfg.get("schedule", {})).get("type", "stationary") != "stationary")
+
     def _make_validation(self, n: int) -> Batch:
         rng = np.random.default_rng(derive_seed(self.seed, "validation"))
-        factor = self._factor(0.0)
-        z = rng.standard_normal((n, self.input_dim))
-        x = (z @ factor.T).astype(np.float32)
-        M = self.teacher_matrix(0.0, 0)
-        y = (x @ M.T).astype(np.float32)  # noiseless validation targets
+        # Default to noiseless targets (measures true-function recovery). For
+        # non-stationary runs, draw across representative progress points so the
+        # validation set is not pinned to the t=0 teacher/covariance.
+        vnoise = float(self.cfg.get("validation_noise_std", 0.0))
+        progresses = [0.0, 0.5, 1.0] if self._is_nonstationary() else [0.0]
+        per = max(1, n // len(progresses))
+        xs, ys = [], []
+        for p in progresses:
+            factor = self._factor(p)
+            regime = self.schedule(p)
+            z = rng.standard_normal((per, self.input_dim))
+            xb = (z @ factor.T).astype(np.float32)
+            M = self.teacher_matrix(p, regime.regime_id)
+            yb = xb @ M.T
+            if vnoise > 0:
+                yb = yb + vnoise * rng.standard_normal(yb.shape)
+            xs.append(xb)
+            ys.append(yb.astype(np.float32))
+        x = np.concatenate(xs, axis=0)
+        y = np.concatenate(ys, axis=0)
         return Batch(
             x=torch.from_numpy(x).to(self.device),
             y=torch.from_numpy(y).to(self.device),

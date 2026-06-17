@@ -1,6 +1,7 @@
 from .baselines import (  # noqa: F401
     Persistence, ConstantVelocity, TunedEMA, Ridge, VectorAutoregression,
-    DMDKoopman, OnlineSubspaceTracker, PeriodicSVD, BASELINE_REGISTRY,
+    DMDKoopman, OnlineSubspaceTracker, PeriodicSVD, AnalyticContraction,
+    BASELINE_REGISTRY,
 )
 from .layer_rnn import LayerGRU  # noqa: F401
 from .graph_dynamics import TopologyGraphGRU  # noqa: F401

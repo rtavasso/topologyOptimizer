@@ -1,6 +1,8 @@
-# E1 — Minimal linear crux (spec Section 21 default experiment).
+# E1 for a single Colab GPU session: the spec's E1 crux, sized to finish in one
+# session. Larger than the smoke config, smaller than the full 5000-step E1.
+# Run with `--device cuda`.
 experiment:
-  name: e1_two_layer_stationary
+  name: e1_colab
   seeds: [0, 1, 2, 3, 4]
   split_seed: 0
 
@@ -9,8 +11,7 @@ data:
   input_dim: 64
   output_dim: 32
   batch_size: 256
-  steps: 5000
-  train_size: 1000000
+  steps: 2000
   input_covariance:
     type: power_law
     alpha: 1.0
@@ -45,21 +46,22 @@ logging:
   probe_kind: gaussian
 
 dynamics_dataset:
-  history_lengths: [1, 4, 16, 32]
-  horizons: [1, 2, 4, 8, 16, 32, 64, 100]
+  history_lengths: [16]
+  horizons: [1, 2, 4, 8, 16, 32]
   targets: [future_gradient, weight_delta, probe_action, gradient_subspace]
   representations: [R1, R2, R3, R5]
   node_feat_dim: 128
 
 eval:
   history_length: 16
-  targets: [future_gradient, probe_action]
+  targets: [future_gradient, probe_action, gradient_subspace]
   horizons: [1, 8, 32]
 
 predictor_config:
   epochs: 60
   hidden: 128
   lr: 0.001
+  device: cuda
 
 online:
   steps: 600
@@ -70,10 +72,11 @@ predictors:
   - ridge
   - tuned_ema
   - vector_autoregression
+  - dmd_koopman
   - online_subspace_tracker
   - periodic_svd
   - analytic_contraction
+  - slow_subspace_fast_coordinate
   - layer_gru
   - topology_graph_gru
   - residualized_topology_graph_gru
-  - slow_subspace_fast_coordinate

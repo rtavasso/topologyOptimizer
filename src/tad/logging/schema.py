@@ -25,6 +25,7 @@ GLOBAL_SCALARS: List[str] = [
 LAYER_FULL_FIELDS: List[str] = [
     "W", "G", "DeltaW", "momentum", "second_moment",
     "activation_mean", "activation_covariance", "output_covariance",
+    "activation_mask",
     "backprop_error_mean", "backprop_error_covariance", "cross_covariance_error_input",
     "probe_WP", "probe_GP", "probe_prefix",
     "gram_in", "gram_out",
@@ -46,6 +47,7 @@ LAYER_SVD_FIELDS: List[str] = [
 # Network-level topology fields (Section 8.4).
 NETWORK_FULL_FIELDS: List[str] = [
     "end_to_end_map", "end_to_end_gradient",
+    "effective_local_map", "probe_effective_local_map",
 ]
 NETWORK_LIST_FIELDS: List[str] = [
     "prefix_products", "suffix_products", "balance_errors",

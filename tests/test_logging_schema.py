@@ -37,3 +37,18 @@ def test_trajectory_roundtrip():
     # checksums present
     man = r.manifest()
     assert man["schema_version"] == SCHEMA_VERSION
+    keys = set(r.field_keys())
+    assert "network__prefix_product__W1" in keys
+    assert "network__suffix_product__W1" in keys
+    assert "network__balance_errors" in keys
+
+
+def test_nonlinear_logging_includes_effective_maps():
+    cfg = tiny_config("mlplog", steps=6, model_type="mlp")
+    rd = train_run(cfg, 0, tempfile.mkdtemp())
+    r = TrajectoryReader(rd)
+    keys = set(r.field_keys())
+
+    assert "layer__W1__activation_mask" in keys
+    assert "network__effective_local_map" in keys
+    assert "network__probe_effective_local_map" in keys

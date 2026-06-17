@@ -10,6 +10,7 @@ predictors:
   - vector_autoregression
   - online_subspace_tracker
   - periodic_svd
+  - analytic_contraction
   - layer_gru
   - topology_graph_gru
   - residualized_topology_graph_gru

@@ -1,6 +1,7 @@
 """Deterministic seeding and RNG-state capture for exact replay."""
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 from dataclasses import dataclass
@@ -38,10 +39,17 @@ def derive_seed(base_seed: int, *parts: Any) -> int:
 
     Used to key per-step streaming batches so that an identical batch sequence
     can be regenerated for exact replay and candidate-update evaluation.
+
+    Uses a stable cryptographic hash (NOT Python's builtin ``hash``, which is
+    salted per-process by ``PYTHONHASHSEED`` for str/bytes/tuples). This makes
+    the derived stream identical across separate ``python`` invocations, which
+    is required for exact replay (spec 20.3) and the "identical future batch"
+    guarantee for candidate-update evaluation (spec 5.6).
     """
-    h = hash((base_seed, *parts))
+    key = "::".join([str(base_seed)] + [str(p) for p in parts])
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
     # Map to a positive 32-bit integer (numpy Generator seed range).
-    return h & 0x7FFFFFFF
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
 
 
 def make_generator(seed: int) -> np.random.Generator:

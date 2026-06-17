@@ -61,11 +61,11 @@ class DeepLinear(TADModel):
         """Balanced/unbalanced factorization of a random end-to-end map."""
         dims = self.dims
         d_out, d_in = dims[-1], dims[0]
-        scale = 1.0 / math.sqrt(d_in)
-        M = scale * torch.randn(d_out, d_in, generator=gen)
-        U, S, Vh = torch.linalg.svd(M, full_matrices=False)
-        r = S.shape[0]
+        r = min(dims)
         n_layers = len(self.layer_names)
+        U, _ = torch.linalg.qr(torch.randn(d_out, r, generator=gen), mode="reduced")
+        V, _ = torch.linalg.qr(torch.randn(d_in, r, generator=gen), mode="reduced")
+        S = torch.exp(torch.randn(r, generator=gen) * 0.25) / math.sqrt(d_in)
         if mode == "balanced_svd":
             s_each = S.clamp_min(1e-8) ** (1.0 / n_layers)
         else:  # unbalanced: concentrate scale in first layer
@@ -74,19 +74,19 @@ class DeepLinear(TADModel):
             for i, name in enumerate(self.layer_names):
                 W = self._linears[name].weight
                 out_d, in_d = W.shape
-                k = min(out_d, in_d, r)
                 block = torch.zeros(out_d, in_d)
-                if mode == "balanced_svd":
-                    block[:k, :k] = torch.diag(s_each[:k])
-                else:
-                    diagv = S[:k] if i == 0 else torch.ones(k)
-                    block[:k, :k] = torch.diag(diagv)
-                # rotate endpoints into U / V on the boundary layers
                 if i == 0:
-                    block[:k, :k] = block[:k, :k] @ Vh[:k, :in_d][:, :k]
-                if i == n_layers - 1:
-                    block[:k, :k] = U[:out_d, :k][:k, :] @ block[:k, :k]
+                    diagv = s_each if mode == "balanced_svd" else S
+                    block[:r, :] = torch.diag(diagv) @ V.T
+                elif i == n_layers - 1:
+                    diagv = s_each if mode == "balanced_svd" else torch.ones_like(S)
+                    block[:, :r] = U @ torch.diag(diagv)
+                else:
+                    diagv = s_each if mode == "balanced_svd" else torch.ones_like(S)
+                    block[:r, :r] = torch.diag(diagv)
                 W.copy_(block)
+                if self._linears[name].bias is not None:
+                    self._linears[name].bias.zero_()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = x

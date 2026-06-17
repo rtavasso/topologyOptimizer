@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 import time
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -111,8 +112,13 @@ def train_run(cfg: Config, seed: int, out_dir, device: str = "cpu",
 
     writer.checkpoint(total_steps - 1, model)
     manifest = writer.close()
+    import hashlib
+    teacher_fp = hashlib.sha1(
+        np.ascontiguousarray(stream.teacher_matrix(0.0, 0), dtype=np.float64).tobytes()
+    ).hexdigest()
     save_run_metadata(run_dir, cfg, extra={"manifest": manifest, "compute": ledger.to_dict(),
-                                           "device": device, "full_batch": full_batch})
+                                           "device": device, "full_batch": full_batch,
+                                           "seed": int(seed), "teacher_fingerprint": teacher_fp})
     return run_dir
 
 

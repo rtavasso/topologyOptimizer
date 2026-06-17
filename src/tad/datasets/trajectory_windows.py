@@ -46,7 +46,13 @@ def _tgt_probe_action(reader, name, step):
 
 
 def _tgt_gradient_subspace(reader, name, step):
-    return _field_at(reader, f"layer__{name}__top_left_singular_vectors_G", step)
+    G = _field_at(reader, f"layer__{name}__G", step)
+    rank = min(G.shape)
+    key = f"layer__{name}__top_left_singular_vectors_G"
+    if reader.has_field(key):
+        rank = min(rank, reader.layer_field(name, "top_left_singular_vectors_G", step=0).shape[1])
+    U, _, _ = _linalg.top_singular(torch.from_numpy(np.asarray(G)), rank)
+    return U.numpy()
 
 
 TARGET_BUILDERS: Dict[str, Callable] = {
@@ -73,6 +79,12 @@ class WindowTensors:
     mask: np.ndarray           # (num_nodes, Tdim) 1 where valid (per node)
     node_shapes: List[tuple]   # original matrix shape per node target
     meta: Dict[str, np.ndarray]
+    aux: Optional[Dict[str, np.ndarray]] = None  # auxiliary tensors (analytic baseline)
+
+
+# matrix-valued gradient/update targets for which the analytic-contraction
+# baseline and subspace baselines are meaningful
+MATRIX_GRADIENT_TARGETS = {"future_gradient", "next_gradient", "future_update", "next_update"}
 
 
 # state-dict key -> logged field name
@@ -94,8 +106,16 @@ TARGET_FIELD = {
     "future_weight": "W", "next_weight": "W",
     "weight_delta": "W", "future_weight_delta": "W",
     "probe_action": "probe_WP", "future_probe_action": "probe_WP",
-    "gradient_subspace": "top_left_singular_vectors_G",
+    "gradient_subspace": "G",
 }
+
+
+def _needs_exact_target(target: str) -> bool:
+    return target == "gradient_subspace"
+
+
+def _exact_target_at(reader: TrajectoryReader, target: str, name: str, step: int) -> np.ndarray:
+    return TARGET_BUILDERS[target](reader, name, step)
 
 
 class _RunCache:
@@ -175,7 +195,7 @@ def build_run_windows(
     base_grid = reader.steps_for(f"layer__{names[0]}__W")
     n_base = len(base_grid)
     cad = reader.cadence_for(f"layer__{names[0]}__W")
-    h_idx = max(1, horizon // cad)  # horizon in base-grid units
+    h_idx = max(1, int(np.ceil(horizon / cad)))  # horizon in base-grid units
 
     sketch = _Sketch(node_feat_dim, sketch_seed)
     scalars = reader.scalars()
@@ -194,12 +214,14 @@ def build_run_windows(
     # determine target dims per node from the preloaded target field
     node_target_shapes = []
     for name in names:
-        sample = cache.at(name, tgt_field, 0)
+        sample = _exact_target_at(reader, target, name, int(base_grid[0])) if _needs_exact_target(target) else cache.at(name, tgt_field, 0)
         node_target_shapes.append(tuple(sample.shape))
     flat_dims = [int(np.prod(s)) for s in node_target_shapes]
     Tdim = max_target_dim or max(flat_dims)
 
     def tgt_at(name, base_idx):
+        if _needs_exact_target(target):
+            return _exact_target_at(reader, target, name, int(base_grid[base_idx]))
         return cache.at(name, tgt_field, base_idx)
 
     # memoize per-(node, step) sketched features and target-space values, since
@@ -228,8 +250,25 @@ def build_run_windows(
             _tgt_memo[k] = v
         return v
 
+    # auxiliary tensors for the analytic deep-linear contraction baseline:
+    # per-node W at the anchor step and the end-to-end-gradient history.
+    collect_aux = (target in MATRIX_GRADIENT_TARGETS
+                   and reader.has_field("network__end_to_end_gradient"))
+    if collect_aux:
+        gm_arr = reader.network_field("end_to_end_gradient")
+        cad_gm = reader.cadence_for("network__end_to_end_gradient")
+        w_flat_dims = [int(np.prod(cache.at(n, "W", 0).shape)) for n in names]
+        maxWdim = max(w_flat_dims)
+        gm_dim = int(np.prod(gm_arr[0].shape))
+        gm_shape = tuple(gm_arr[0].shape)
+
+        def gm_at(base_idx):
+            idx = (base_idx * cad) // cad_gm
+            return gm_arr[min(idx, len(gm_arr) - 1)]
+
     feat_rows, tgt_hist_rows, Y_rows = [], [], []
     meta_t, meta_phase, meta_regime = [], [], []
+    auxW_rows, auxGM_rows = [], []
 
     last_valid = n_base - h_idx
     for i in range(history_length - 1, last_valid):
@@ -254,6 +293,11 @@ def build_run_windows(
         meta_phase.append(base_t / max(1, reader.total_steps))
         meta_regime.append(int(step_to_regime.get(base_t, 0)))
 
+        if collect_aux:
+            auxW_rows.append(np.stack([_pad(cache.at(n, "W", i).reshape(-1), maxWdim) for n in names]))
+            auxGM_rows.append(np.stack([_pad(gm_at(hp).reshape(-1), gm_dim)
+                                        for hp in range(i - history_length + 1, i + 1)]))
+
     if not feat_rows:
         return None
 
@@ -262,6 +306,14 @@ def build_run_windows(
         mask[ni, :fd] = 1.0
 
     N = len(feat_rows)
+    aux = None
+    if collect_aux:
+        aux = {
+            "aux_W": np.stack(auxW_rows).astype(np.float32),          # (N, nodes, maxWdim)
+            "aux_GM_hist": np.stack(auxGM_rows).astype(np.float32),    # (N, H, gm_dim)
+            "aux_W_shapes": np.array([tuple(cache.at(n, "W", 0).shape) for n in names]),
+            "aux_GM_shape": np.array(gm_shape),
+        }
     return WindowTensors(
         feat_hist=np.stack(feat_rows).astype(np.float32),
         tgt_hist=np.stack(tgt_hist_rows).astype(np.float32),
@@ -275,7 +327,10 @@ def build_run_windows(
             "run_index": np.full(N, run_index),
             "horizon": np.full(N, horizon),
             "history_length": np.full(N, history_length),
+            "cadence": np.full(N, cad),
+            "h_idx": np.full(N, h_idx),
         },
+        aux=aux,
     )
 
 

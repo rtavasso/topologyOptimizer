@@ -43,7 +43,7 @@ def gradient_cosine_vs_horizon(reader: TrajectoryReader, layer: str, horizons: L
     cad = reader.cadence_for(f"layer__{layer}__G")
     out = {}
     for h in horizons:
-        hi = max(1, h // cad)
+        hi = max(1, int(np.ceil(h / cad)))
         if hi >= len(G):
             out[h] = float("nan")
             continue
@@ -57,7 +57,7 @@ def update_cosine_vs_horizon(reader: TrajectoryReader, layer: str, horizons: Lis
     cad = reader.cadence_for(f"layer__{layer}__DeltaW")
     out = {}
     for h in horizons:
-        hi = max(1, h // cad)
+        hi = max(1, int(np.ceil(h / cad)))
         if hi >= len(dW):
             out[h] = float("nan")
             continue
@@ -66,18 +66,18 @@ def update_cosine_vs_horizon(reader: TrajectoryReader, layer: str, horizons: Lis
 
 
 def subspace_overlap_vs_horizon(reader, layer, horizons, rank=8) -> Dict[int, float]:
-    UG = reader.layer_field(layer, "top_left_singular_vectors_G")
-    cad = reader.cadence_for(f"layer__{layer}__top_left_singular_vectors_G")
+    G = reader.layer_field(layer, "G")
+    cad = reader.cadence_for(f"layer__{layer}__G")
     out = {}
     for h in horizons:
-        hi = max(1, h // cad)
-        if hi >= len(UG):
+        hi = max(1, int(np.ceil(h / cad)))
+        if hi >= len(G):
             out[h] = float("nan")
             continue
         vals = []
-        for t in range(len(UG) - hi):
-            U1 = torch.from_numpy(UG[t][:, :rank])
-            U2 = torch.from_numpy(UG[t + hi][:, :rank])
+        for t in range(len(G) - hi):
+            U1, _, _ = linalg.top_singular(torch.from_numpy(G[t]), min(rank, *G[t].shape))
+            U2, _, _ = linalg.top_singular(torch.from_numpy(G[t + hi]), min(rank, *G[t + hi].shape))
             vals.append(linalg.subspace_overlap(U1, U2))
         out[h] = float(np.nanmean(vals))
     return out
@@ -86,22 +86,16 @@ def subspace_overlap_vs_horizon(reader, layer, horizons, rank=8) -> Dict[int, fl
 def energy_capture_vs_horizon(reader, layer, horizons, ranks=(1, 2, 4, 8, 16)) -> Dict[int, Dict[int, float]]:
     """R_{t+h|t}: energy of future gradient captured by current subspace."""
     G = reader.layer_field(layer, "G")
-    UG = reader.layer_field(layer, "top_left_singular_vectors_G")
-    VG = reader.layer_field(layer, "top_right_singular_vectors_G")
     cad_g = reader.cadence_for(f"layer__{layer}__G")
-    cad_u = reader.cadence_for(f"layer__{layer}__top_left_singular_vectors_G")
     out: Dict[int, Dict[int, float]] = {}
     for r in ranks:
         out[r] = {}
         for h in horizons:
-            hi = max(1, h // cad_g)
+            hi = max(1, int(np.ceil(h / cad_g)))
             vals = []
             for t in range(len(G) - hi):
-                u_idx = (t * cad_g) // cad_u
-                if u_idx >= len(UG):
-                    continue
-                U = torch.from_numpy(UG[u_idx][:, :r])
-                V = torch.from_numpy(VG[u_idx][:, :r])
+                rank = min(r, *G[t].shape)
+                U, _, V = linalg.top_singular(torch.from_numpy(G[t]), rank)
                 Gh = torch.from_numpy(G[t + hi])
                 vals.append(linalg.energy_capture(U, Gh, V))
             out[r][h] = float(np.nanmean(vals)) if vals else float("nan")

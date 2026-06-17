@@ -9,8 +9,58 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+import torch
 
 from .base import Predictor, split_arrays
+from ..utils import linalg
+
+# matrix-valued gradient/update targets for which subspace / contraction
+# baselines are meaningful; other targets fall back to persistence.
+_MATRIX_TARGETS = {"future_gradient", "next_gradient", "future_update", "next_update"}
+
+
+def _target_name(bundle) -> str:
+    return str(bundle.get("target", "")) if bundle.get("target", None) is not None else ""
+
+
+def _top_eigvecs(C: torch.Tensor, r: int) -> torch.Tensor:
+    """Top-r eigenvectors of a symmetric PSD matrix (descending)."""
+    C = 0.5 * (C + C.transpose(0, 1))
+    evals, evecs = torch.linalg.eigh(C)
+    return evecs[:, -r:].flip(1)
+
+
+def _subspace_reconstruct(tgt_hist, shapes, rank, mode, beta=0.9, period=5) -> np.ndarray:
+    """Predict a future gradient by projecting the last gradient onto an
+    estimated slow subspace (Section 7.3 subspace baselines).
+
+    mode='ema'      : exponentially weighted covariance eigenspace (online).
+    mode='periodic' : subspace from SVD of the gradient at the last refresh step.
+    """
+    N, H, nodes, Td = tgt_hist.shape
+    out = np.zeros((N, nodes, Td), dtype=np.float32)
+    for ni in range(nodes):
+        shape = tuple(int(s) for s in shapes[ni])
+        flat = int(np.prod(shape))
+        r = min(rank, shape[0], shape[1])
+        ref = ((H - 1) // max(1, period)) * max(1, period) if mode == "periodic" else None
+        for b in range(N):
+            Glast = torch.from_numpy(tgt_hist[b, -1, ni, :flat].reshape(shape))
+            if mode == "periodic":
+                Gref = torch.from_numpy(tgt_hist[b, ref, ni, :flat].reshape(shape))
+                U, _, V = linalg.top_singular(Gref, r)
+            else:
+                Cl = torch.zeros(shape[0], shape[0])
+                Cr = torch.zeros(shape[1], shape[1])
+                for t in range(H):
+                    G = torch.from_numpy(tgt_hist[b, t, ni, :flat].reshape(shape))
+                    Cl = beta * Cl + (1 - beta) * (G @ G.transpose(0, 1))
+                    Cr = beta * Cr + (1 - beta) * (G.transpose(0, 1) @ G)
+                U = _top_eigvecs(Cl, r)
+                V = _top_eigvecs(Cr, r)
+            C = U.transpose(0, 1) @ Glast @ V
+            out[b, ni, :flat] = (U @ C @ V.transpose(0, 1)).reshape(-1).numpy()
+    return out
 
 
 class Persistence(Predictor):
@@ -145,8 +195,8 @@ class DMDKoopman(Predictor):
         G = X.T @ X + self.alpha * np.eye(X.shape[1], dtype=X.dtype)
         self.A = np.linalg.solve(G, X.T @ Xn)
         self._shape = (nodes, Td)
-        self.rollout = max(1, int(bundle.get("train_meta_horizon", np.array([1]))[0]) //
-                           max(1, int(bundle.get("cadence", 1))))
+        # roll forward exactly h_idx base-grid steps (cadence-correct)
+        self.rollout = max(1, int(bundle.get("h_idx", 1)))
 
     def predict(self, bundle, split):
         _, tgt_hist, _ = split_arrays(bundle, split)
@@ -160,34 +210,97 @@ class DMDKoopman(Predictor):
 
 
 class OnlineSubspaceTracker(Predictor):
-    """Oja-style online subspace tracker over the gradient history (Section 7.3).
-
-    Predicts the leading left-singular subspace; for general matrix targets it
-    falls back to persistence of the target value.
+    """Online subspace tracker (Section 7.3): exponentially weighted covariance
+    eigenspace of the gradient history (the fixed point of Oja's rule). Predicts
+    the future gradient by projecting the last gradient onto the tracked left/
+    right subspaces. Falls back to persistence for non-matrix targets.
     """
 
     name = "online_subspace_tracker"
 
     def __init__(self, cfg=None):
         super().__init__(cfg)
-        self.lr = float((cfg or {}).get("oja_lr", 0.1))
+        cfg = cfg or {}
+        self.rank = int(cfg.get("rank", 8))
+        self.beta = float(cfg.get("ema_beta", 0.9))
 
     def predict(self, bundle, split):
-        # For target-space prediction we return persistence; the *subspace*
-        # quality of this tracker is evaluated by the subspace metrics that call
-        # ``track_subspace`` below.
         _, tgt_hist, _ = split_arrays(bundle, split)
-        return tgt_hist[:, -1]
+        if _target_name(bundle) not in _MATRIX_TARGETS:
+            return tgt_hist[:, -1]
+        return _subspace_reconstruct(tgt_hist, bundle["node_shapes"], self.rank,
+                                     mode="ema", beta=self.beta)
 
 
 class PeriodicSVD(Predictor):
-    """Periodic-SVD baseline: predicts from the most recent observed target."""
+    """Periodic real-gradient SVD refresh (Section 7.3 / GaLore-style): the
+    subspace is recomputed by SVD of the gradient at the last refresh step and
+    held until the next refresh; predicts by projecting the last gradient onto
+    it. Falls back to persistence for non-matrix targets.
+    """
 
     name = "periodic_svd"
 
+    def __init__(self, cfg=None):
+        super().__init__(cfg)
+        cfg = cfg or {}
+        self.rank = int(cfg.get("rank", 8))
+        self.period = int(cfg.get("refresh_period", 5))
+
     def predict(self, bundle, split):
         _, tgt_hist, _ = split_arrays(bundle, split)
-        return tgt_hist[:, -1]
+        if _target_name(bundle) not in _MATRIX_TARGETS:
+            return tgt_hist[:, -1]
+        return _subspace_reconstruct(tgt_hist, bundle["node_shapes"], self.rank,
+                                     mode="periodic", period=self.period)
+
+
+class AnalyticContraction(Predictor):
+    """Analytic deep-linear contraction baseline (Sections 7.4, 11.1(10), H4).
+
+    For a 2-layer linear net, predicts the future end-to-end gradient G_M by EMA
+    over its history, then forms the layer gradients via the exact contractions
+    G_1 = W_2^T G_M, G_2 = G_M W_1^T using the anchor-step weights. A
+    topology-aware learner is credited only for improvement beyond this.
+    Requires the auxiliary tensors emitted for matrix-gradient targets;
+    otherwise falls back to persistence.
+    """
+
+    name = "analytic_contraction"
+
+    def __init__(self, cfg=None):
+        super().__init__(cfg)
+        self.beta = float((cfg or {}).get("ema_beta", 0.9))
+
+    def predict(self, bundle, split):
+        _, tgt_hist, _ = split_arrays(bundle, split)
+        auxW = bundle.get(f"{split}_aux_W")
+        auxGM = bundle.get(f"{split}_aux_GM_hist")
+        names = list(bundle.get("layer_names", []))
+        if (auxW is None or auxGM is None or len(names) != 2
+                or _target_name(bundle) not in _MATRIX_TARGETS):
+            return tgt_hist[:, -1]
+        node_shapes = bundle["node_shapes"]
+        Wshapes = bundle[f"{split}_aux_W_shapes"]
+        GMshape = tuple(int(s) for s in bundle[f"{split}_aux_GM_shape"])
+        gm_dim = int(np.prod(GMshape))
+        N, nodes, Td = tgt_hist[:, -1].shape
+        out = np.zeros((N, nodes, Td), dtype=np.float32)
+        w1_shape = tuple(int(s) for s in Wshapes[0])
+        w2_shape = tuple(int(s) for s in Wshapes[1])
+        f1, f2 = int(np.prod(w1_shape)), int(np.prod(w2_shape))
+        g1_flat = int(np.prod(tuple(int(s) for s in node_shapes[0])))
+        g2_flat = int(np.prod(tuple(int(s) for s in node_shapes[1])))
+        for b in range(N):
+            gm = auxGM[b, 0, :gm_dim]
+            for t in range(1, auxGM.shape[1]):
+                gm = self.beta * gm + (1 - self.beta) * auxGM[b, t, :gm_dim]
+            GM = gm.reshape(GMshape)
+            W1 = auxW[b, 0, :f1].reshape(w1_shape)
+            W2 = auxW[b, 1, :f2].reshape(w2_shape)
+            out[b, 0, :g1_flat] = (W2.T @ GM).reshape(-1)
+            out[b, 1, :g2_flat] = (GM @ W1.T).reshape(-1)
+        return out
 
 
 BASELINE_REGISTRY = {
@@ -199,4 +312,5 @@ BASELINE_REGISTRY = {
     "dmd_koopman": DMDKoopman,
     "online_subspace_tracker": OnlineSubspaceTracker,
     "periodic_svd": PeriodicSVD,
+    "analytic_contraction": AnalyticContraction,
 }

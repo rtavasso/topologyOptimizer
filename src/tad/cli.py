@@ -61,7 +61,7 @@ def cmd_build_dataset(args):
 def _evaluate_all(cfg: Config, exp: Path, device: str) -> dict:
     from .datasets import load_dynamics_dataset
     from .predictors import build_predictor
-    from .predictors.baselines import Persistence, TunedEMA
+    from .predictors.baselines import BASELINE_REGISTRY
     from .evaluation.offline import evaluate_prediction
 
     processed = exp / "processed"
@@ -88,7 +88,7 @@ def _evaluate_all(cfg: Config, exp: Path, device: str) -> dict:
                 continue
             # baseline predictions for skill scores
             base_preds = {}
-            for bname, bcls in [("persistence", Persistence), ("tuned_ema", TunedEMA)]:
+            for bname, bcls in BASELINE_REGISTRY.items():
                 b = bcls(pcfg)
                 b.fit(bundle)
                 base_preds[bname] = b.predict(bundle, "test")
