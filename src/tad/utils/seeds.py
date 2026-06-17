@@ -28,10 +28,16 @@ def set_global_seed(seed: int, deterministic: bool = True) -> None:
         torch.backends.cudnn.benchmark = False
         # cuBLAS deterministic workspace (no-op on CPU).
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-        try:
-            torch.use_deterministic_algorithms(True, warn_only=True)
-        except Exception:
-            pass
+        # Strict determinism is enforced only on CPU. On CUDA,
+        # use_deterministic_algorithms makes matmul hard-error unless cuBLAS's
+        # workspace was configured before the CUDA context initialized — which we
+        # can't guarantee in a notebook. GPU runs rely on cuDNN-deterministic +
+        # seeded RNG with documented tolerances (spec 20.3).
+        if not torch.cuda.is_available():
+            try:
+                torch.use_deterministic_algorithms(True, warn_only=True)
+            except Exception:
+                pass
 
 
 def derive_seed(base_seed: int, *parts: Any) -> int:
