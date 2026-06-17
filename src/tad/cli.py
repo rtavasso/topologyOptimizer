@@ -26,6 +26,11 @@ from .config import load_config, save_run_metadata, Config
 from .training.trainer import train_run
 
 
+def _skill_vs_strongest(metrics: dict) -> float:
+    vals = [v for k, v in metrics.items() if k.startswith("skill_vs_") and np.isfinite(v)]
+    return float(min(vals)) if vals else float("nan")
+
+
 def _exp_dir(cfg: Config, root: str = "artifacts/experiments") -> Path:
     d = Path(root) / cfg.experiment["name"]
     d.mkdir(parents=True, exist_ok=True)
@@ -99,7 +104,9 @@ def _evaluate_all(cfg: Config, exp: Path, device: str) -> dict:
                 metrics = evaluate_prediction(Yhat, test_Y, mask, shapes, target, base_preds)
                 results[pn].setdefault(target, {})[str(h)] = metrics
                 print(f"[eval] {pn:32s} {target:16s} h{h:<3d} "
-                      f"nMSE={metrics['nmse']:.3e} skill_vs_ema={metrics.get('skill_vs_tuned_ema', float('nan')):.3f}")
+                      f"nMSE={metrics['nmse']:.3e} "
+                      f"skill_vs_ema={metrics.get('skill_vs_tuned_ema', float('nan')):.3f} "
+                      f"skill_vs_strongest={_skill_vs_strongest(metrics):.3f}")
     return results
 
 

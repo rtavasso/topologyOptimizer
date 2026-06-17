@@ -18,7 +18,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from ..logging.reader import TrajectoryReader
+from ..predictors.baselines import BASELINE_REGISTRY
 from . import temporal_structure as ts
+
+BASELINE_NAMES = set(BASELINE_REGISTRY) | {"analytic_contraction"}
 
 
 def _save(fig, path):
@@ -116,25 +119,28 @@ def _probe_autocorr(reader, horizons, outdir) -> str:
 
 
 def _predictor_bars(eval_results, outdir) -> Optional[str]:
-    """Bar chart of skill vs strongest baseline at h=1 (residual predictability)."""
+    """Bar chart of learned-model skill vs strongest baseline at h=1."""
     if not eval_results:
         return None
-    # eval_results: {predictor: {target: {horizon: metrics}}}
-    h_key = None
     fig, ax = plt.subplots(figsize=(7, 4))
     names, skills = [], []
     for pred, by_target in eval_results.items():
+        if pred in BASELINE_NAMES:
+            continue
         # pick first target, smallest horizon
         for tgt, by_h in by_target.items():
             hs = sorted(int(k) for k in by_h)
             m = by_h[str(hs[0])]
-            skill = m.get("skill_vs_tuned_ema", m.get("r2"))
+            skill = _skill_vs_strongest(m)
             names.append(f"{pred}\n{tgt} h{hs[0]}")
             skills.append(skill)
             break
+    if not names:
+        plt.close(fig)
+        return None
     ax.bar(range(len(names)), skills)
     ax.set_xticks(range(len(names))); ax.set_xticklabels(names, rotation=45, ha="right", fontsize=6)
-    ax.axhline(0, color="k", lw=0.8); ax.set_ylabel("skill vs tuned EMA")
+    ax.axhline(0, color="k", lw=0.8); ax.set_ylabel("skill vs strongest baseline")
     ax.set_title("Residual predictability beyond strongest baseline")
     p = outdir / "09_predictor_skill.png"; _save(fig, p); return p.name
 
@@ -159,17 +165,19 @@ def _hypothesis_conclusions(reader, eval_results, oracle) -> Dict[str, str]:
             "(analytic baseline validated; learned topology must beat this)."
         )
     if eval_results:
-        # H1/H7: any learned model beats tuned EMA?
+        # H1/H7: any learned model beats every available baseline?
         beats = []
         for pred, by_target in eval_results.items():
+            if pred in BASELINE_NAMES:
+                continue
             for tgt, by_h in by_target.items():
                 for h, m in by_h.items():
-                    sk = m.get("skill_vs_tuned_ema")
+                    sk = _skill_vs_strongest(m)
                     if sk is not None and sk > 0:
                         beats.append((pred, tgt, h, sk))
         out["H1/H7 (residual predictability)"] = (
-            f"{len(beats)} (predictor,target,horizon) cells beat tuned EMA."
-            if beats else "no learned model beat tuned EMA (negative result retained)."
+            f"{len(beats)} learned-model cells beat the strongest available baseline."
+            if beats else "no learned model beat the strongest available baseline (negative result retained)."
         )
     if oracle:
         out["H8 (optimization value)"] = (
@@ -254,15 +262,23 @@ def _assemble_markdown(reader, imgs, skill_img, eval_results, oracle, compute, c
 
 
 def _metrics_table(eval_results) -> str:
-    rows = ["| predictor | target | horizon | nMSE | cosine | R2 | skill vs EMA | subspace overlap |",
-            "|---|---|---|---|---|---|---|---|"]
+    rows = ["| predictor | target | horizon | nMSE | cosine | R2 | skill vs EMA | skill vs strongest | subspace overlap |",
+            "|---|---|---|---|---|---|---|---|---|"]
     for pred, by_target in eval_results.items():
         for tgt, by_h in by_target.items():
             for h in sorted(by_h, key=lambda x: int(x)):
                 m = by_h[h]
-                rows.append("| {} | {} | {} | {:.3e} | {:.3f} | {:.3f} | {} | {} |".format(
+                rows.append("| {} | {} | {} | {:.3e} | {:.3f} | {:.3f} | {} | {} | {} |".format(
                     pred, tgt, h, m.get("nmse", float("nan")), m.get("cosine", float("nan")),
                     m.get("r2", float("nan")),
                     f"{m.get('skill_vs_tuned_ema', float('nan')):.3f}",
+                    f"{_skill_vs_strongest(m):.3f}",
                     f"{m.get('subspace_overlap', float('nan')):.3f}"))
     return "\n".join(rows) + "\n"
+
+
+def _skill_vs_strongest(metrics: dict) -> float:
+    vals = [v for k, v in metrics.items() if k.startswith("skill_vs_") and np.isfinite(v)]
+    if not vals:
+        return float("nan")
+    return float(min(vals))
