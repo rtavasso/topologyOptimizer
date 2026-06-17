@@ -46,15 +46,21 @@ logging:
   probe_kind: gaussian
 
 dynamics_dataset:
+  # session-sized: 2 targets x 3 horizons. The full e1.yaml additionally covers
+  # weight_delta + gradient_subspace and horizons up to 100.
   history_lengths: [16]
-  horizons: [1, 2, 4, 8, 16, 32]
-  targets: [future_gradient, weight_delta, probe_action, gradient_subspace]
+  horizons: [1, 8, 32]
+  targets: [future_gradient, probe_action]
   representations: [R1, R2, R3, R5]
   node_feat_dim: 128
+  # stride between window anchors. With high-dim targets (the 8192-dim full-E1
+  # gradient) fully-overlapping windows (stride=1) blow up RAM; stride 8 keeps
+  # the dense history-window tensors small enough for a Colab instance.
+  window_stride: 8
 
 eval:
   history_length: 16
-  targets: [future_gradient, probe_action, gradient_subspace]
+  targets: [future_gradient, probe_action]
   horizons: [1, 8, 32]
 
 predictor_config:

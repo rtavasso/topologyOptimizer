@@ -190,6 +190,7 @@ def build_run_windows(
     sketch_seed: int = 0,
     run_index: int = 0,
     max_target_dim: Optional[int] = None,
+    stride: int = 1,
 ) -> Optional[WindowTensors]:
     names = reader.layer_names
     base_grid = reader.steps_for(f"layer__{names[0]}__W")
@@ -271,7 +272,10 @@ def build_run_windows(
     auxW_rows, auxGM_rows = [], []
 
     last_valid = n_base - h_idx
-    for i in range(history_length - 1, last_valid):
+    # stride > 1 reduces overlap between consecutive windows; with stride ==
+    # history_length the windows are non-overlapping (no per-step redundancy),
+    # which bounds memory for high-dim targets (e.g. full-E1 gradients).
+    for i in range(history_length - 1, last_valid, max(1, stride)):
         t_target = i + h_idx
         node_feats_H, node_tgt_H = [], []
         for hpos in range(i - history_length + 1, i + 1):

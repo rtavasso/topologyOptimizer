@@ -32,7 +32,7 @@ def split_runs(run_dirs: List[Path], fractions=(0.7, 0.15, 0.15), seed: int = 0)
     return {"train": tr, "val": va or te[:1], "test": te or va[:1]}
 
 
-def _gather(run_dirs, hl, h, target, reps, node_feat_dim, run_offset) -> Optional[WindowTensors]:
+def _gather(run_dirs, hl, h, target, reps, node_feat_dim, run_offset, stride=1) -> Optional[WindowTensors]:
     parts = []
     shapes, mask, names = None, None, None
     # compute global max target dim first for consistent padding
@@ -46,7 +46,8 @@ def _gather(run_dirs, hl, h, target, reps, node_feat_dim, run_offset) -> Optiona
             max_dim = max(max_dim, int(np.prod(s.shape)))
     for k, r in enumerate(readers):
         w = build_run_windows(r, hl, h, target, reps, node_feat_dim=node_feat_dim,
-                              sketch_seed=0, run_index=run_offset + k, max_target_dim=max_dim)
+                              sketch_seed=0, run_index=run_offset + k, max_target_dim=max_dim,
+                              stride=stride)
         if w is None:
             continue
         parts.append(w)
@@ -82,6 +83,7 @@ def build_dynamics_dataset(cfg, trajectory_dir, out_dir) -> dict:
     targets = list(dd.get("targets", ["future_gradient", "weight_delta", "probe_action"]))
     reps = list(dd.get("representations", ["R1", "R2", "R3", "R5"]))
     node_feat_dim = int(dd.get("node_feat_dim", 128))
+    stride = int(dd.get("window_stride", 1))
     split = split_runs(run_dirs, seed=int(cfg.get("experiment", {}).get("split_seed", 0))
                        if hasattr(cfg, "get") else 0)
 
@@ -89,16 +91,21 @@ def build_dynamics_dataset(cfg, trajectory_dir, out_dir) -> dict:
     _assert_no_leakage(split)
 
     manifest = {"targets": targets, "history_lengths": history_lengths, "horizons": horizons,
-                "representations": reps, "splits": {k: [p.name for p in v] for k, v in split.items()}}
+                "representations": reps, "window_stride": stride,
+                "splits": {k: [p.name for p in v] for k, v in split.items()}}
 
     offsets = {"train": 0, "val": 1000, "test": 2000}
+    n_combos = len(targets) * len(history_lengths) * len(horizons)
+    print(f"[build-dataset] {len(run_dirs)} runs -> {n_combos} (target,H,horizon) datasets "
+          f"(window_stride={stride})", flush=True)
+    done = 0
     for target in targets:
         for hl in history_lengths:
             for h in horizons:
                 bundle = {}
                 names = None
                 for sp in ("train", "val", "test"):
-                    res = _gather(split[sp], hl, h, target, reps, node_feat_dim, offsets[sp])
+                    res = _gather(split[sp], hl, h, target, reps, node_feat_dim, offsets[sp], stride=stride)
                     if res is None:
                         continue
                     w, names = res
@@ -120,6 +127,10 @@ def build_dynamics_dataset(cfg, trajectory_dir, out_dir) -> dict:
                 bundle["layer_names"] = np.array(names if names else [])
                 fname = f"{target}__H{hl}__h{h}.npz"
                 np.savez_compressed(out_dir / fname, **bundle)
+                done += 1
+                n_train = bundle.get("train_Y", np.empty((0,))).shape[0]
+                print(f"[build-dataset] [{done}/{n_combos}] {target} H{hl} h{h} "
+                      f"({n_train} train windows)", flush=True)
 
     with open(out_dir / "dataset_manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

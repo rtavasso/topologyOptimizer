@@ -50,6 +50,10 @@ dynamics_dataset:
   targets: [future_gradient, weight_delta, probe_action, gradient_subspace]
   representations: [R1, R2, R3, R5]
   node_feat_dim: 128
+  # dense history windows over the 8192-dim gradient target are memory-heavy at
+  # H=32; stride 4 bounds RAM. Set to 1 for maximum training windows if you have
+  # the memory (the stride is recorded in the dataset manifest — no silent caps).
+  window_stride: 4
 
 eval:
   history_length: 16
